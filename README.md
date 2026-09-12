@@ -73,8 +73,18 @@ companion `omarchy-battery`.
 
 ## Install
 
+From a release download:
+
 ```sh
-pending
+unzip ~/Downloads/io.github.enigmazflo.battery-plus.zip -d ~/.config/omarchy/plugins/
+omarchy-shell shell rescanPlugins
+omarchy plugin enable io.github.enigmazflo.battery-plus
+```
+
+Or straight from git:
+
+```sh
+omarchy plugin add https://github.com/Enigmazflo/omarchy-battery-plus --enable
 ```
 
 Local dev — note: widget QML edits need a full shell restart to apply:
