@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.allphis.battery-plus",
+  "name": "Battery Plus",
+  "version": "1.16.0",
+  "author": "allphis",
+  "license": "MIT",
+  "description": "Lightweight event-driven battery widget: icon, wattage, percentage, charging animation, drain prediction, and power-profile switching.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Battery Plus",
+    "description": "Battery icon, live wattage and percentage, time-to-empty tooltip, click to switch power profile.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "pollIntervalMs": 15000,
+      "sampleIntervalMs": 60000,
+      "showIcon": true,
+      "showWattage": true,
+      "showPercentage": true,
+      "hoverDetails": true,
+      "iconStyle": "Battery",
+      "wattageFx": "Glow"
+    },
+    "schema": [
+      {
+        "key": "pollIntervalMs",
+        "type": "integer",
+        "label": "Sysfs fallback poll interval (ms)",
+        "description": "Only used when UPower bindings are unavailable. 10000-30000 recommended.",
+        "min": 5000,
+        "max": 60000,
+        "step": 1000,
+        "defaultValue": 15000
+      },
+      {
+        "key": "sampleIntervalMs",
+        "type": "integer",
+        "label": "Drain history sample interval (ms)",
+        "description": "How often to record a discharge sample for prediction.",
+        "min": 15000,
+        "max": 600000,
+        "step": 5000,
+        "defaultValue": 60000
+      },
+      {
+        "key": "showIcon",
+        "type": "boolean",
+        "label": "Show battery icon",
+        "defaultValue": true
+      },
+      {
+        "key": "showWattage",
+        "type": "boolean",
+        "label": "Show wattage",
+        "defaultValue": true
+      },
+      {
+        "key": "showPercentage",
+        "type": "boolean",
+        "label": "Show percentage",
+        "defaultValue": true
+      },
+      {
+        "key": "hoverDetails",
+        "type": "boolean",
+        "label": "Graph hover details",
+        "description": "Hovering the history graph shows time, level, and status at the nearest sample.",
+        "defaultValue": true
+      },
+      {
+        "key": "iconStyle",
+        "type": "enum",
+        "label": "Battery icon style",
+        "description": "Canvas-drawn icon. Battery fills to the real percentage; Battery + % leaves the body empty with the number inside.",
+        "options": ["Battery", "Battery + %"],
+        "defaultValue": "Battery"
+      },
+      {
+        "key": "wattageFx",
+        "type": "enum",
+        "label": "Wattage animation",
+        "description": "Glow: halo breathes while charging, brighter under load. Counting: odometer rollers per digit. Shimmer: digits glow in the direction of change. Heat: color follows load. Off: plain text.",
+        "options": ["Glow", "Counting", "Shimmer", "Heat", "Off"],
+        "defaultValue": "Glow"
+      }
+    ]
+  }
+}
