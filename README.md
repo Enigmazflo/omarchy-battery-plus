@@ -5,6 +5,11 @@ charging pulse, drain prediction, and power-profile switching — with
 toggles for everything shown in the bar. Long-term history lives in the
 companion `omarchy-battery`.
 
+## Screenshots
+
+![Bar widget](screenshots/bar.png)
+![Popup: power profiles, 24h battery history, and customize cards](screenshots/fullview.png)
+
 ## What it does
 
 -- **Main widget:** Shows the battery icon, current power usage in watts, and battery percentage. It uses Quickshell's `UPower.displayDevice` and updates automatically when the battery changes.

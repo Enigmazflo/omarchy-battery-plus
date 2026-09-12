@@ -1668,7 +1668,7 @@ BarWidget {
                 text: fxName === "Counting" ? "Count" : fxName
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.bodySmall
+                font.pixelSize: Style.font.caption
                 font.bold: selected
               }
             }
