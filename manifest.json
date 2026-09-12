@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.allphis.battery-plus",
+  "id": "io.github.enigmazflo.battery-plus",
   "name": "Battery Plus",
   "version": "1.16.0",
-  "author": "allphis",
+  "author": "enigmazflo",
   "license": "MIT",
   "description": "Lightweight event-driven battery widget: icon, wattage, percentage, charging animation, drain prediction, and power-profile switching.",
   "kinds": ["service", "bar-widget"],

@@ -21,7 +21,7 @@ import qs.Commons
 // restart the shell (omarchy-restart-shell) after changing this file.
 BarWidget {
   id: root
-  moduleName: "io.github.allphis.battery-plus"
+  moduleName: "io.github.enigmazflo.battery-plus"
 
   // --- Bar click-target contract (mirrors WidgetButton): the bar routes
   // slot clicks here (see moduleTargetClickable in Bar.qml).
