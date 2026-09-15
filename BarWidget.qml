@@ -56,15 +56,20 @@ BarWidget {
   // bar's slot handler doesn't accept the button, so only the MouseArea fires.
   //
   // Deliberately SAFE: no press ever changes the power profile by itself.
-  // Profiles change only via explicit selection in the popup. Any press
-  // toggles the popup.
+  // Profiles change only via explicit selection in the popup.
+  // Left-click = status view (profiles, history, power draw).
+  // Right-click = settings view (hover toggle, Customize, Advanced).
   function handlePress(button) {
     if (!svc) return
     if (!popupOpen) {
       popupOpen = true
-      // Right-click jumps straight to the Advanced (workings) section;
-      // any other button opens the standard view.
-      if (button === Qt.RightButton) showAdvanced = true
+      if (button === Qt.RightButton) {
+        settingsView = true
+        showCustomize = true
+        showAdvanced = true
+      } else {
+        settingsView = false
+      }
       svc.refreshProfiles()
       refreshChart()
     } else {
@@ -355,12 +360,15 @@ BarWidget {
   property bool hovered: false
 
   property bool popupOpen: false
+  // Settings view (right-click): hover toggle + Customize + Advanced.
+  // Left-click shows the status view only.
+  property bool settingsView: false
   // Advanced (workings) section: expanded via its header, or instantly by
   // right-clicking the widget. Session-only; display choices persist.
   property bool showAdvanced: false
   // Customize section: same collapsible pattern, expanded via its header.
   property bool showCustomize: false
-  function close() { popupOpen = false }
+  function close() { popupOpen = false; settingsView = false }
 
   // --- 24h history chart (rendered by battery-chart into SVG) ---
   readonly property string chartBin: Quickshell.env("HOME") + "/.local/bin/battery-chart"
@@ -377,6 +385,146 @@ BarWidget {
   property real hoverT: 0
   property real graphReveal: 0
   readonly property bool hoverDetails: setting("hoverDetails", true) === true
+  // Screen-on time for this discharge cycle (collector-accumulated, dpms-gated).
+  property int sotSec: 0
+  property int sotSince: 0
+  function fmtSot(sec) {
+    sec = Math.max(0, Math.round(Number(sec) || 0))
+    if (sec < 60) return sec + "s"
+    var m = Math.floor(sec / 60)
+    if (m < 60) return m + "m"
+    return Math.floor(m / 60) + "h " + (m % 60) + "m"
+  }
+  readonly property string sotText: {
+    if (sotSec <= 0) return ""
+    var accent = String(Color.accent)
+    var s = 'Screen on <font color="' + accent + '"><b>' + fmtSot(sotSec) + "</b></font>"
+    if (sotSince > 0) {
+      try { s += " since " + Qt.formatDateTime(new Date(sotSince * 1000), "hh:mm") } catch (e) {}
+    }
+    return s
+  }
+
+  // --- Power-draw sparkline: rolling watts, UPower cadence ---
+  // Persistent 30s samples (no I/O — reads the cached UPower value), kept
+  // across popup opens: 64 samples ≈ 32-minute window, no redraw waste.
+  // Bands key off the platform ceiling (svc.wattBase): light <1/3,
+  // amber 1/3-2/3, red above. Charging is always green.
+  property var wattHistory: []
+  property int wattHistoryMax: 64
+  readonly property real wattBase: svc && Number(svc.wattBase) > 0 ? Number(svc.wattBase) : 30
+  readonly property real wattBandLo: wattBase / 3
+  readonly property real wattBandHi: wattBase * 2 / 3
+  readonly property string wattChgColor: "#4CC38A"
+  readonly property string wattMidColor: "#E5A63B"
+  function fmtW(w) {
+    w = Number(w) || 0
+    return (Math.round(w * 10) / 10) + "W"
+  }
+  // Axis top: round the true peak (all samples, charging included) up to a
+  // clean 5W step (68->70, 45->45), floored at the platform ceiling so the
+  // strip never zooms tighter than the band context.
+  function niceCeil(v) {
+    v = Number(v) || 0
+    if (v <= 0) return 5
+    return Math.ceil(v / 5) * 5
+  }
+  // Continuous line runs, same engine as the battery graph: samples split
+  // into band runs (charging + 3 discharge bands), each stroked with monotone
+  // smoothing so color transitions land exactly on band crossings.
+  property var wattRuns: []
+  function wattBandOf(s) {
+    s = s || {}
+    if (s.ch) return 0
+    var w = Number(s.w) || 0
+    if (w < wattBandLo) return 1
+    if (w < wattBandHi) return 2
+    return 3
+  }
+  function wattBandColorBy(b) {
+    if (b === 0) return wattChgColor
+    if (b === 1) return Util.alpha(root.bar ? String(root.bar.barForeground) : "#ffffff", 0.55)
+    if (b === 2) return wattMidColor
+    return String(Color.urgent)
+  }
+  function finishWattRun(arr, band) {
+    var xs = [], ys = []
+    for (var i = 0; i < arr.length; i++) {
+      xs.push(Number(arr[i].t))
+      ys.push(Number(arr[i].level))
+    }
+    return { pts: arr, m: monoTangents(xs, ys), band: band }
+  }
+  function rebuildWattCurve() {
+    var h = root.wattHistory
+    var runs = []
+    if (h.length > 0) {
+      var pts = []
+      for (var i = 0; i < h.length; i++)
+        pts.push({ t: i, level: Number(h[i].w) || 0, band: wattBandOf(h[i]) })
+      var cur = [pts[0]], curB = pts[0].band
+      for (var k = 1; k < pts.length; k++) {
+        if (pts[k].band !== curB) {
+          runs.push(finishWattRun(cur, curB))
+          cur = [pts[k - 1]]
+          curB = pts[k].band
+        }
+        cur.push(pts[k])
+      }
+      runs.push(finishWattRun(cur, curB))
+    }
+    root.wattRuns = runs
+  }
+  function paintSpark() {
+    var canvas = sparkCanvas
+    if (!canvas) return
+    var ctx = canvas.getContext("2d")
+    var W = canvas.width, H = canvas.height
+    ctx.clearRect(0, 0, W, H)
+    var n = root.wattHistory.length
+    if (n === 0 || W < 50 || H < 20) return
+    // Dynamic scale from ALL samples: the axis top is the true ceiling
+    // (70W charging peak -> 70W top), floored at the platform ceiling.
+    var maxAll = -1
+    for (var i = 0; i < n; i++)
+      maxAll = Math.max(maxAll, Number(root.wattHistory[i].w) || 0)
+    var mx = Math.max(wattBase, niceCeil(maxAll))
+    var padL = 34, padT = 4, padB = 4
+    function PX(t) { return n > 1 ? padL + (Number(t) / (n - 1)) * (W - padL - 2) : padL + (W - padL - 2) / 2 }
+    function PY(v) { return padT + (1 - Math.max(0, Number(v)) / mx) * (H - padT - padB) }
+    var fg = root.bar ? String(root.bar.barForeground) : "#ffffff"
+    // Y axis: ceiling top, band boundaries, zero — same look as the % graph.
+    ctx.font = "9px monospace"
+    ctx.fillStyle = Util.alpha(fg, 0.55)
+    ctx.textBaseline = "middle"
+    ctx.textAlign = "right"
+    var marks = (mx - wattBandHi < 0.5)
+      ? [wattBandHi, wattBandLo, 0]
+      : [mx, wattBandHi, wattBandLo, 0]
+    for (var m = 0; m < marks.length; m++) {
+      var gy = Math.round(PY(marks[m])) + 0.5
+      if (gy < 1 || gy > H - 1) continue
+      ctx.strokeStyle = Util.alpha(fg, m === 0 || m === 3 ? 0.16 : 0.14)
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(padL, gy)
+      ctx.lineTo(W, gy)
+      ctx.stroke()
+      ctx.fillText(fmtW(marks[m]), padL - 4, gy)
+    }
+    ctx.textAlign = "start"
+    var lw = 1.5
+    for (var r = 0; r < root.wattRuns.length; r++) {
+      var run = root.wattRuns[r]
+      strokeMono(ctx, run, PX, PY, wattBandColorBy(run.band), lw)
+    }
+    // Now dot.
+    var last = root.wattHistory[n - 1] || {}
+    ctx.beginPath()
+    ctx.arc(PX(n - 1), PY(last.w), lw + 1, 0, Math.PI * 2)
+    ctx.fillStyle = wattBandColorBy(wattBandOf(last))
+    ctx.fill()
+  }
 
   // Re-rendered on every popup open (fresh SQLite query, never cached).
   function refreshChart() {
@@ -848,6 +996,9 @@ BarWidget {
     wattsShown = wattsVal
     if (svc && typeof svc.refreshProfiles === "function") svc.refreshProfiles()
   }
+  // Popup open/close no longer touches sampling: history persists.
+  onWattHistoryChanged: { root.rebuildWattCurve(); if (sparkCanvas) sparkCanvas.requestPaint() }
+  onWattBaseChanged: { root.rebuildWattCurve(); if (sparkCanvas) sparkCanvas.requestPaint() }
   onPctChanged: repaintIcon()
   onChargingChanged: repaintIcon()
   onBarSizeChanged: repaintIcon()
@@ -1263,6 +1414,24 @@ BarWidget {
     }
   }
 
+  // Rolling sparkline sampler: 30s ticks, always (cached value, no I/O).
+  // Same cadence as UPower itself, so each tick carries a fresh reading and
+  // the popup opens with history already populated.
+  Timer {
+    id: wattSampler
+    interval: 30000
+    running: !!root.svc && root.present
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: {
+      if (!root.svc) return
+      var next = root.wattHistory.slice()
+      next.push({ w: root.wattsVal, ch: root.charging })
+      while (next.length > root.wattHistoryMax) next.shift()
+      root.wattHistory = next
+    }
+  }
+
   FileView {
     id: chartFile
     path: root.chartJson
@@ -1271,6 +1440,13 @@ BarWidget {
     onLoaded: {
       try {
         var obj = JSON.parse(text())
+        if (obj && obj.sot) {
+          root.sotSec = Math.max(0, Number(obj.sot.sec) || 0)
+          root.sotSince = Math.max(0, Number(obj.sot.since) || 0)
+        } else {
+          root.sotSec = 0
+          root.sotSince = 0
+        }
         if (obj && Array.isArray(obj.points) && obj.points.length >= 1) {
           root.graphData = obj
           root.rebuildCurve()
@@ -1290,6 +1466,8 @@ BarWidget {
         root.rebuildCurve()
         root.graphReady = false
         root.chartStatus = "Could not read history data"
+        root.sotSec = 0
+        root.sotSince = 0
       }
       if (historyCanvas) historyCanvas.requestPaint()
     }
@@ -1297,6 +1475,8 @@ BarWidget {
       root.graphData = null
       root.graphReady = false
       root.chartStatus = "Chart data unavailable — is the collector running?"
+      root.sotSec = 0
+      root.sotSince = 0
     }
   }
 
@@ -1316,6 +1496,7 @@ BarWidget {
 
       Text {
         textFormat: Text.PlainText
+        visible: !root.settingsView
         text: "Power profile"
         color: root.bar ? root.bar.foreground : "white"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
@@ -1324,14 +1505,27 @@ BarWidget {
       }
 
       Text {
-        textFormat: Text.PlainText
-        text: (root.svc && root.svc.timeToEmptyText && root.svc.timeToEmptyText !== "—")
-          ? ("~" + root.svc.timeToEmptyText + " until empty")
-          : (root.charging ? "Charging" : (root.svc ? String(root.svc.stateName) : ""))
+        textFormat: Text.StyledText
+        text: {
+          var accent = String(Color.accent)
+          if (root.svc && root.svc.timeToEmptyText && root.svc.timeToEmptyText !== "—")
+            return '~<font color="' + accent + '"><b>' + root.svc.timeToEmptyText + "</b></font> until empty"
+          if (root.charging) return "Charging"
+          return root.svc ? String(root.svc.stateName) : ""
+        }
         color: root.bar ? Qt.darker(root.bar.foreground, 1.4) : "gray"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
         font.pixelSize: Style.font.caption
-        visible: text !== ""
+        visible: !root.settingsView && text !== ""
+      }
+
+      Text {
+        textFormat: Text.StyledText
+        text: root.sotText
+        color: root.bar ? Qt.darker(root.bar.foreground, 1.4) : "gray"
+        font.family: root.bar ? root.bar.fontFamily : "monospace"
+        font.pixelSize: Style.font.caption
+        visible: !root.settingsView && text !== ""
       }
 
       // Profile cards: icon over label, 3-across (or N-across for however
@@ -1341,7 +1535,7 @@ BarWidget {
         id: profileRow
         width: col.width
         spacing: Style.space(6)
-        visible: root.svc && root.svc.profiles.length > 0
+        visible: !root.settingsView && root.svc && root.svc.profiles.length > 0
 
         Repeater {
           model: root.svc ? root.svc.profiles : []
@@ -1401,6 +1595,7 @@ BarWidget {
 
       Text {
         textFormat: Text.PlainText
+        visible: !root.settingsView
         text: "Battery history (24h)"
         color: root.bar ? root.bar.foreground : "white"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
@@ -1416,14 +1611,14 @@ BarWidget {
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
         width: parent.width
-        visible: text !== ""
+        visible: !root.settingsView && text !== ""
       }
 
       Item {
         id: graphBox
         width: col.width
         height: 170
-        visible: root.graphReady
+        visible: !root.settingsView && root.graphReady
 
         Canvas {
           id: historyCanvas
@@ -1467,7 +1662,7 @@ BarWidget {
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
         width: parent.width
-        visible: root.graphReady && text !== ""
+        visible: !root.settingsView && root.graphReady && text !== ""
       }
 
       Toggle {
@@ -1475,11 +1670,86 @@ BarWidget {
         label: "Graph hover details"
         checked: root.hoverDetails
         foreground: root.bar.foreground
-        visible: root.graphReady
+        visible: root.settingsView && root.graphReady
         onClicked: root.saveSetting("hoverDetails", !root.hoverDetails)
       }
 
       Item {
+        visible: !root.settingsView
+        width: col.width
+        height: Math.max(drawHeader.implicitHeight, drawLive.implicitHeight)
+
+        Text {
+          id: drawHeader
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Power draw"
+          color: root.bar ? root.bar.foreground : "white"
+          font.family: root.bar ? root.bar.fontFamily : "monospace"
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+        }
+
+        Text {
+          id: drawLive
+          textFormat: Text.PlainText
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.wattsDisplay !== "" ? root.wattsDisplay + (root.charging ? " in" : " out") : ""
+          color: root.bar ? Qt.darker(root.bar.foreground, 1.4) : "gray"
+          font.family: root.bar ? root.bar.fontFamily : "monospace"
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+      }
+
+      Item {
+        visible: !root.settingsView
+        width: col.width
+        height: 60
+
+        Canvas {
+          id: sparkCanvas
+          anchors.fill: parent
+          renderTarget: Canvas.FramebufferObject
+          onWidthChanged: requestPaint()
+          onHeightChanged: requestPaint()
+          onPaint: root.paintSpark()
+        }
+      }
+
+      Text {
+        textFormat: Text.StyledText
+        visible: !root.settingsView
+        text: {
+          var fg = root.bar ? String(root.bar.foreground) : "#ffffff"
+          return '<font color="' + wattChgColor + '"><b>Charging</b></font>'
+            + '<font color="' + fg + '"> · <b>Low</b> &lt;' + fmtW(wattBandLo) + "</font>"
+            + '<font color="' + wattMidColor + '"> · <b>Moderate</b> '
+            + fmtW(wattBandLo) + "–" + fmtW(wattBandHi) + "</font>"
+            + '<font color="' + String(Color.urgent) + '"> · <b>High</b> '
+            + fmtW(wattBandHi) + "+</font>"
+        }
+        color: root.bar ? Qt.darker(root.bar.foreground, 1.8) : "gray"
+        font.family: root.bar ? root.bar.fontFamily : "monospace"
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+        width: parent.width
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        visible: !root.settingsView
+        text: "Bands are thirds of the " + fmtW(wattBase) + " platform ceiling (RAPL package max)"
+        color: root.bar ? Qt.darker(root.bar.foreground, 1.8) : "gray"
+        font.family: root.bar ? root.bar.fontFamily : "monospace"
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+        width: parent.width
+      }
+
+      Item {
+        visible: root.settingsView
         width: col.width
         height: custHeader.implicitHeight + Style.space(4)
 
@@ -1504,7 +1774,7 @@ BarWidget {
 
       Row {
         id: styleRow
-        visible: root.showCustomize
+        visible: root.settingsView && root.showCustomize
         width: col.width
         spacing: Style.space(6)
 
@@ -1529,7 +1799,7 @@ BarWidget {
       // visibility (same cards pattern as the profile row above).
       Row {
         id: elementRow
-        visible: root.showCustomize
+        visible: root.settingsView && root.showCustomize
         width: col.width
         spacing: Style.space(6)
 
@@ -1605,7 +1875,7 @@ BarWidget {
 
       Text {
         textFormat: Text.PlainText
-        visible: root.showCustomize
+        visible: root.settingsView && root.showCustomize
         text: "Wattage effect"
         color: root.bar ? root.bar.foreground : "white"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
@@ -1615,7 +1885,7 @@ BarWidget {
 
       Text {
         textFormat: Text.PlainText
-        visible: root.showCustomize && text !== ""
+        visible: root.settingsView && root.showCustomize && text !== ""
         text: "Applies instantly to the bar"
         color: root.bar ? Qt.darker(root.bar.foreground, 1.4) : "gray"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
@@ -1626,7 +1896,7 @@ BarWidget {
       // pattern as the rows above). Tap previews live in the bar.
       Row {
         id: fxRow
-        visible: root.showCustomize
+        visible: root.settingsView && root.showCustomize
         width: col.width
         spacing: Style.space(6)
 
@@ -1687,7 +1957,7 @@ BarWidget {
 
       Text {
         textFormat: Text.PlainText
-        visible: root.showCustomize
+        visible: root.settingsView && root.showCustomize
         text: "Order"
         color: root.bar ? root.bar.foreground : "white"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
@@ -1699,7 +1969,7 @@ BarWidget {
         model: ["icon", "watts", "pct"]
         delegate: Row {
           required property string modelData
-          visible: root.showCustomize
+          visible: root.settingsView && root.showCustomize
           readonly property string ekey: modelData
           readonly property int epos: root.elementOrder.indexOf(modelData)
 
@@ -1738,6 +2008,7 @@ BarWidget {
       }
 
       Item {
+        visible: root.settingsView
         width: col.width
         height: advHeader.implicitHeight + Style.space(4)
 
@@ -1766,13 +2037,13 @@ BarWidget {
         color: root.bar ? Qt.darker(root.bar.foreground, 1.4) : "gray"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
         font.pixelSize: Style.font.caption
-        visible: root.showAdvanced && text !== ""
+        visible: root.settingsView && root.showAdvanced && text !== ""
       }
 
       Row {
         width: col.width
         spacing: Style.space(6)
-        visible: root.showAdvanced
+        visible: root.settingsView && root.showAdvanced
 
         Text {
           textFormat: Text.PlainText
@@ -1815,7 +2086,7 @@ BarWidget {
       Row {
         width: col.width
         spacing: Style.space(6)
-        visible: root.showAdvanced
+        visible: root.settingsView && root.showAdvanced
 
         Text {
           textFormat: Text.PlainText
@@ -1863,20 +2134,21 @@ BarWidget {
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
         width: parent.width
-        visible: root.showAdvanced
+        visible: root.settingsView && root.showAdvanced
       }
 
       Button {
         width: col.width
         text: "Reset workings to defaults"
         foreground: root.bar.foreground
-        visible: root.showAdvanced
+        visible: root.settingsView && root.showAdvanced
         onClicked: root.resetWorkings()
       }
 
       Text {
         textFormat: Text.PlainText
-        text: "Right-click the widget for workings · click a profile to apply · click to dismiss"
+        visible: !root.settingsView
+        text: "Right-click for settings · click a profile to apply · click to dismiss"
         color: root.bar ? Qt.darker(root.bar.foreground, 1.8) : "gray"
         font.family: root.bar ? root.bar.fontFamily : "monospace"
         font.pixelSize: Style.font.caption

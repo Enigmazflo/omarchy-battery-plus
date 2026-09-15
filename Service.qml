@@ -44,6 +44,11 @@ Item {
   property string sysfsState: ""
   property bool sysfsPresent: false
   readonly property bool useSysfs: !upowerAvailable
+  // Platform power ceiling (W) anchoring the sparkline bands: max(30W floor,
+  // Intel/AMD RAPL package max). Probed once at startup; world-readable,
+  // no root needed. The 30W floor keeps bands meaningful on low-TDP machines
+  // whose total system draw still swings 5-15W (screen + SoC + rest).
+  property real wattBase: 30
 
   function sysfsDiscover() {
     if (upowerAvailable || sysfsProbe.running) return
@@ -400,8 +405,23 @@ Item {
     }
   }
 
+  // One-shot RAPL ceiling probe (max constraint_0 across powercap zones,
+  // µW -> W). Missing/unreadable (VMs, ARM, no powercap) keeps the 30W default.
+  Process {
+    id: raplProbe
+    command: ["bash", "-c", "cat /sys/class/powercap/*/constraint_0_max_power_uw 2>/dev/null | sort -n | tail -n1"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var uw = Number(String(text || "").trim())
+        if (isFinite(uw) && uw > 0) root.wattBase = Math.max(30, uw / 1000000.0)
+      }
+    }
+  }
+
   Component.onCompleted: {
     if (!upowerAvailable) sysfsDiscover()
+    if (!raplProbe.running) raplProbe.running = true
     refreshProfiles()
     recomputePrediction()
   }
