@@ -1,0 +1,9 @@
+[package]
+name = "omarchy-battery"
+version = "1.0.0"
+edition = "2021"
+description = "Samsung One UI-style battery history: systemd collector, EMA prediction, SVG chart renderer"
+license = "MIT"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }

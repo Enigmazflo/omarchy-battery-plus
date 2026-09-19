@@ -1,0 +1,21 @@
+[Unit]
+Description=Omarchy battery history collector (Samsung-style stair-step log)
+Documentation=https://github.com/anomalyco/opencode
+# No hard deps: pure sysfs polling. Starts with the user session.
+After=default.target
+
+[Service]
+Type=simple
+# Binaries live in ~/.local/bin (see README install step).
+ExecStart=%h/.local/bin/omarchy-battery-collector
+# Optional env overrides; create the file to tune without editing the unit:
+#   POLL_SECS / HEARTBEAT_SECS / PRUNE_DAYS — actually OMARCHY_BATTERY_* names,
+#   see README. Missing file is fine (the "-" prefix).
+EnvironmentFile=-%h/.config/omarchy-battery/env
+# Exits 0 (not "failure") when the machine has no battery, so a desktop
+# doesn't restart-loop.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
